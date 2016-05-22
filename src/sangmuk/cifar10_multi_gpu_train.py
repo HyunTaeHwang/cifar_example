@@ -43,24 +43,19 @@ from datetime import datetime
 import os.path
 import re
 import time
-from datetime import datetime
 import math
 
-# pylint: disable=unused-import,g-bad-import-order
-import tensorflow.python.platform
-from tensorflow.python.platform import gfile
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 import cifar10
-# pylint: disable=unused-import,g-bad-import-order
 
 FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_string('train_dir', './cifar10_train',
                            """Directory where to write event logs """
                            """and checkpoint.""")
-tf.app.flags.DEFINE_integer('max_steps', 100000,
+tf.app.flags.DEFINE_integer('max_steps', 1000000,
                             """Number of batches to run.""")
 tf.app.flags.DEFINE_integer('num_gpus', 4,
                             """How many GPUs to use.""")
@@ -121,7 +116,7 @@ def eval_once(sess, top_k_op, index):
   """
   print('eval once')
   # Start the queue runners.
-  
+
   num_iter = int(math.ceil(cifar10.NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN / FLAGS.batch_size))
   true_count = 0  # Counts the number of correct predictions.
   total_sample_count = num_iter * FLAGS.batch_size
@@ -134,7 +129,6 @@ def eval_once(sess, top_k_op, index):
   # Compute precision @ 1.
   precision = true_count / total_sample_count
   print('%s: accuracy @ 1 = %.3f, %d / %d at %d' % (datetime.now(), precision, true_count, total_sample_count, index))
-
 
 def average_gradients(tower_grads):
   """Calculate the average gradient for each shared variable across all towers.
@@ -202,7 +196,7 @@ def train():
     tower_grads = []
     tower_top_k_op = []
     for i in xrange(FLAGS.num_gpus):
-      with tf.device('/gpu:%d' % (i)):
+      with tf.device('/gpu:%d' % i):
         with tf.name_scope('%s_%d' % (cifar10.TOWER_NAME, i)) as scope:
           # Calculate the loss for one tower of the CIFAR model. This function
           # constructs the entire CIFAR model but shares the variables across
@@ -231,7 +225,7 @@ def train():
 
     # Add histograms for gradients.
     for grad, var in grads:
-      if grad:
+      if grad is not None:
         summaries.append(
             tf.histogram_summary(var.op.name + '/gradients', grad))
 
@@ -270,8 +264,7 @@ def train():
     # Start the queue runners.
     tf.train.start_queue_runners(sess=sess)
 
-    summary_writer = tf.train.SummaryWriter(FLAGS.train_dir,
-                                            graph_def=sess.graph_def)
+    summary_writer = tf.train.SummaryWriter(FLAGS.train_dir, sess.graph)
 
     for step in xrange(FLAGS.max_steps):
       start_time = time.time()
@@ -290,8 +283,6 @@ def train():
         print (format_str % (datetime.now(), step, loss_value,
                              examples_per_sec, sec_per_batch))
 
-        
-
       if step % 100 == 0:
         summary_str = sess.run(summary_op)
         summary_writer.add_summary(summary_str, step)
@@ -300,17 +291,17 @@ def train():
       if step % 1000 == 0 or (step + 1) == FLAGS.max_steps:
         checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
         saver.save(sess, checkpoint_path, global_step=step)
-        index = 0
+
         for top_k_op in tower_top_k_op:
-          eval_once(sess, top_k_op, index)
+          eval_once(sess, top_k_op, 0)
           break
 
 
 def main(argv=None):  # pylint: disable=unused-argument
   cifar10.maybe_download_and_extract()
-  if gfile.Exists(FLAGS.train_dir):
-    gfile.DeleteRecursively(FLAGS.train_dir)
-  gfile.MakeDirs(FLAGS.train_dir)
+  if tf.gfile.Exists(FLAGS.train_dir):
+    tf.gfile.DeleteRecursively(FLAGS.train_dir)
+  tf.gfile.MakeDirs(FLAGS.train_dir)
   train()
 
 
