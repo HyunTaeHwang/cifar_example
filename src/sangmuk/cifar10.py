@@ -65,7 +65,7 @@ NUM_EXAMPLES_PER_EPOCH_FOR_EVAL = cifar10_input.NUM_EXAMPLES_PER_EPOCH_FOR_EVAL
 MOVING_AVERAGE_DECAY = 0.9999     # The decay to use for the moving average.
 NUM_EPOCHS_PER_DECAY = 350.0      # Epochs after which learning rate decays.
 LEARNING_RATE_DECAY_FACTOR = 0.1  # Learning rate decay factor.
-INITIAL_LEARNING_RATE = 0.1       # Initial learning rate.
+INITIAL_LEARNING_RATE = 0.1      # Initial learning rate.
 
 # If a model is trained with multiple GPUs, prefix all Op names with tower_name
 # to differentiate the operations. Note that this prefix is removed from the
@@ -272,6 +272,15 @@ def inference(images):
 
   return softmax_linear
 
+def dense_to_one_hot(labels_dense, num_classes=10):
+  """Convert class labels from scalars to one-hot vectors."""
+  sparse_labels = tf.reshape(labels_dense, [-1, 1])
+  derived_size = tf.shape(sparse_labels)[0]
+  indices = tf.reshape(tf.range(0, derived_size, 1), [-1, 1])
+  concated = tf.concat(1, [indices, sparse_labels])
+  outshape = tf.concat(0, [tf.reshape(derived_size, [1]), tf.reshape(num_classes, [1])])
+  labels = tf.sparse_to_dense(concated, outshape, 1.0, 0.0)
+  return labels
 
 def loss(logits, labels):
   """Add L2Loss to all the trainable variables.
@@ -286,9 +295,12 @@ def loss(logits, labels):
     Loss tensor of type float.
   """
   # Calculate the average cross entropy loss across the batch.
-  labels = tf.cast(labels, tf.int64)
-  cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
-      logits, labels, name='cross_entropy_per_example')
+  labels = dense_to_one_hot(labels, 10) #tf.cast(labels, tf.int64)
+  clip = tf.log(tf.clip_by_value(tf.nn.softmax(logits),1e-10,1.0))
+  mult = labels * clip
+  cross_entropy = -tf.reduce_sum(mult,1)
+  #tf.nn.sparse_softmax_cross_entropy_with_logits(
+  #    logits, labels, name='cross_entropy_per_example')
   cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
   tf.add_to_collection('losses', cross_entropy_mean)
 
