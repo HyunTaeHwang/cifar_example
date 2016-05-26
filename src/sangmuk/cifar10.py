@@ -44,7 +44,7 @@ import tarfile
 from six.moves import urllib
 import tensorflow as tf
 
-from tensorflow.models.image.cifar10 import cifar10_input
+import cifar10_input
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -65,7 +65,7 @@ NUM_EXAMPLES_PER_EPOCH_FOR_EVAL = cifar10_input.NUM_EXAMPLES_PER_EPOCH_FOR_EVAL
 MOVING_AVERAGE_DECAY = 0.9999     # The decay to use for the moving average.
 NUM_EPOCHS_PER_DECAY = 350.0      # Epochs after which learning rate decays.
 LEARNING_RATE_DECAY_FACTOR = 0.1  # Learning rate decay factor.
-INITIAL_LEARNING_RATE = 0.1      # Initial learning rate.
+INITIAL_LEARNING_RATE = 0.1       # Initial learning rate.
 
 # If a model is trained with multiple GPUs, prefix all Op names with tower_name
 # to differentiate the operations. Note that this prefix is removed from the
@@ -169,15 +169,33 @@ def inputs(eval_data):
   return cifar10_input.inputs(eval_data=eval_data, data_dir=data_dir,
                               batch_size=FLAGS.batch_size)
 
-def conv_layer(input_tensor, input_dim, output_dim, kernel_size, strides, layer_name):
+
+def conv_layer(input_tensor, input_dim, output_dim, kernel_size, strides,last, layer_name):
   with tf.name_scope(layer_name) as scope:
     kernel = _variable_with_weight_decay(layer_name + '/weights',
         shape=[kernel_size, kernel_size, input_dim, output_dim],
-        stddev=1e-4, wd=0.0)
+        stddev=0.1, wd=0.0)
+    conv = tf.nn.conv2d(input_tensor, kernel, strides, padding='SAME')
+    
+    mean, var = tf.nn.moments(conv, axes=[0,1,2], name=layer_name + "_mv", keep_dims=False)
+    beta = _variable_with_weight_decay(layer_name + '/beta',
+        shape=[output_dim],
+        stddev=0.1, wd=0.0)
+    gamma = _variable_with_weight_decay(layer_name + '/gamma',
+        shape=[output_dim],
+        stddev=0.1, wd=0.0)
+    
+    batch_norm = tf.nn.batch_normalization(
+        conv, mean, var, beta, gamma, 0.001,
+        layer_name + '/bn')
     biases = _variable_on_cpu(layer_name + '/biases',
         [output_dim], tf.constant_initializer(0.1))
-    conv = tf.nn.conv2d(input_tensor, kernel, strides, padding='SAME')
-    local = tf.nn.relu(tf.nn.bias_add(conv, biases), name=layer_name)
+    print (batch_norm)
+    print (biases)
+    if last==True:
+      local = tf.nn.bias_add(batch_norm, biases)
+    else:
+      local = tf.nn.relu(tf.nn.bias_add(batch_norm, biases), layer_name+'/local')    
     return local;
 
 def pool_layer(input_tensor, kernel_size, pool_strides, layer_name):
@@ -186,12 +204,12 @@ def pool_layer(input_tensor, kernel_size, pool_strides, layer_name):
       padding='SAME', name=layer_name)
   return pool
 
-def residual_layer_half(input_tensor, input_dim, filters, index):
-  _conv1 = conv_layer(input_tensor, input_dim, filters, 3, [1, 2, 2, 1], 'conv%d' % index)
-  _ressize = conv_layer(input_tensor, input_dim, filters, 2, [1, 2, 2, 1], 'resize%d' % index)
-  _conv2 = conv_layer(_conv1, filters, filters, 3, [1, 1, 1, 1], 'conv%d' % (index+1))
+def residual_layer_half(input_tensor, input_dim, filters, index,layer_name):
+  _conv1 = conv_layer(input_tensor, input_dim, filters, 3, [1, 2, 2, 1],False, layer_name+'_conv%d' % index)
+  _ressize = conv_layer(input_tensor, input_dim, filters, 2, [1, 2, 2, 1],True, layer_name+'_resize%d' % index)
+  _conv2 = conv_layer(_conv1, filters, filters, 3, [1, 1, 1, 1],False, layer_name+'_conv%d' % (index+1))
   index = index + 2
-  _res1 = tf.add(_ressize, _conv2, 'sum%d' % 0)
+  _res1 = tf.nn.relu(tf.add(_ressize, _conv2), layer_name+'_sum%d' % 0)
   return _res1
 
 def residual_layer(input_tensor, input_dim, filters, n, index, layer_name, isHalf):
@@ -199,11 +217,12 @@ def residual_layer(input_tensor, input_dim, filters, n, index, layer_name, isHal
     _res1 = input_tensor
     for i in range(n):
       if isHalf and i == 0:
-        _res1 = residual_layer_half(_res1, input_dim, filters, index)
+        print (_res1)
+        _res1 = residual_layer_half(_res1, input_dim, filters, index, layer_name)
       else:
-        _conv1 = conv_layer(_res1, filters, filters, 3, [1, 1, 1, 1], 'conv%d' % index)
-        _conv2 = conv_layer(_conv1, filters, filters, 3, [1, 1, 1, 1], 'conv%d' % (index+1))
-        _res1 = tf.add(_res1, _conv2, 'sum%d' % (i+1))
+        _conv1 = conv_layer(_res1, filters, filters, 3, [1, 1, 1, 1], False,layer_name+'_conv%d' % index)
+        _conv2 = conv_layer(_conv1, filters, filters, 3, [1, 1, 1, 1], True,layer_name+'_conv%d' % (index+1))
+        _res1 = tf.nn.relu(tf.add(_res1, _conv2), layer_name+'_sum%d' % (i+1))
       index = index + 2
   return _res1, index
 
@@ -222,8 +241,8 @@ def inference(images):
   # by replacing all instances of tf.get_variable() with tf.Variable().
   #
   # conv1
-  first_layer_output_dim = 32
-  conv1 = conv_layer(images, 3, first_layer_output_dim, 5, [1, 1, 1, 1], 'conv1')
+  first_layer_output_dim = 16
+  conv1 = conv_layer(images, 3, first_layer_output_dim, 3, [1, 1, 1, 1],False, 'conv1')
 
   n = 3
   # conv 32x32
@@ -232,9 +251,10 @@ def inference(images):
   index = 2
 
  # _res1 = conv_layer(_res1, input_dim, filters, 3, [1, 2, 2, 1], 'mid_conv1')
-  _res1, index = residual_layer(conv1, input_dim, 32, n, index, 'residual1', False)
-  #_res2, index = residual_layer(_res1, 16, 32, n, index, 'residual2', True)
-
+  _res1, index = residual_layer(conv1, input_dim, 16, n, index, 'residual1', False)
+  _res1, index = residual_layer(_res1, 16, 32, n, index, 'residual2', True)
+  _res1, index = residual_layer(_res1, 32, 64, n, index, 'residual3', True)
+    
   # norm2
   norm2 = tf.nn.lrn(_res1, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75,
                     name='norm2')
@@ -242,32 +262,16 @@ def inference(images):
   pool2 = tf.nn.max_pool(norm2, ksize=[1, 3, 3, 1],
                          strides=[1, 2, 2, 1], padding='SAME', name='pool2')
 
-  # local3
-  with tf.variable_scope('local3') as scope:
-    # Move everything into depth so we can perform a single matrix multiply.
-    reshape = tf.reshape(pool2, [FLAGS.batch_size, -1])
-    dim = reshape.get_shape()[1].value
-    weights = _variable_with_weight_decay('weights', shape=[dim, 384],
-                                          stddev=0.04, wd=0.004)
-    biases = _variable_on_cpu('biases', [384], tf.constant_initializer(0.1))
-    local3 = tf.nn.relu(tf.matmul(reshape, weights) + biases, name=scope.name)
-    _activation_summary(local3)
-
-  # local4
-  with tf.variable_scope('local4') as scope:
-    weights = _variable_with_weight_decay('weights', shape=[384, 192],
-                                          stddev=0.04, wd=0.004)
-    biases = _variable_on_cpu('biases', [192], tf.constant_initializer(0.1))
-    local4 = tf.nn.relu(tf.matmul(local3, weights) + biases, name=scope.name)
-    _activation_summary(local4)
 
   # softmax, i.e. softmax(WX + b)
   with tf.variable_scope('softmax_linear') as scope:
-    weights = _variable_with_weight_decay('weights', [192, NUM_CLASSES],
+    reshape = tf.reshape(pool2, [FLAGS.batch_size, -1])
+    dim = reshape.get_shape()[1].value
+    weights = _variable_with_weight_decay('weights', [dim, NUM_CLASSES],
                                           stddev=1/192.0, wd=0.0)
     biases = _variable_on_cpu('biases', [NUM_CLASSES],
                               tf.constant_initializer(0.0))
-    softmax_linear = tf.add(tf.matmul(local4, weights), biases, name=scope.name)
+    softmax_linear = tf.add(tf.matmul(reshape, weights), biases, name=scope.name)
     _activation_summary(softmax_linear)
 
   return softmax_linear
@@ -284,13 +288,11 @@ def dense_to_one_hot(labels_dense, num_classes=10):
 
 def loss(logits, labels):
   """Add L2Loss to all the trainable variables.
-
   Add summary for "Loss" and "Loss/avg".
   Args:
     logits: Logits from inference().
     labels: Labels from distorted_inputs or inputs(). 1-D tensor
             of shape [batch_size]
-
   Returns:
     Loss tensor of type float.
   """

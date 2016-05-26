@@ -129,6 +129,7 @@ def eval_once(sess, top_k_op, index):
   # Compute precision @ 1.
   precision = true_count / total_sample_count
   print('%s: accuracy @ 1 = %.3f, %d / %d at %d' % (datetime.now(), precision, true_count, total_sample_count, index))
+  tf.scalar_summary('accuracy ', precision)
 
 def average_gradients(tower_grads):
   """Calculate the average gradient for each shared variable across all towers.
